@@ -1,0 +1,632 @@
+library(gplots)
+library(ggplot2)
+library(pheatmap)
+library(survival)
+library(survivalROC)
+
+##表达谱处理
+SKCMmexp<-read.table("E:/test/SKCM_mexp.txt",sep="\t",header=T) #读入mRNA表达谱
+SKCMmexp<-as.matrix(SKCMmexp)
+mutation<-read.table("E:/9780/gene_mutation/MUC16_mutation.txt",sep="\t",header=T) #读入突变信息
+mutation<-as.matrix(mutation)
+muta<-mutation[which(mutation[,3]=="SKCM" & mutation[,2]=="1")]
+a<-paste(gsub("-",".",muta),".01",sep="")
+mu<-a[is.element(a,colnames(SKCMmexp))] #突变样本
+non<-mutation[which(mutation[,3]=="SKCM" & mutation[,2]=="0")]
+b<-paste(gsub("-",".",non),".01",sep="")
+no<-b[is.element(b,colnames(SKCMmexp))] #不突变样本
+normal<-colnames(SKCMmexp)[grep("\\.11",colnames(SKCMmexp))] #正常样本
+samples<-c(mu,no,normal)
+SKCMexp<-SKCMmexp[,samples]
+d<-apply(SKCMexp,1,function(x){length(which(x==0))})
+SKCMexp<-SKCMexp[which(d<dim(SKCMexp)[2]*0.3),]  #去除50%上含0的基因
+###SKCM<-apply(SKCMexp,2,function(x){log2(x+1)})
+na<-colnames(SKCMexp)
+SKCM<-t(apply(SKCMexp,1,scale))  #Z-score标准化
+colnames(SKCM)<-na
+
+
+######突变不突变中差异表达并与MUC16共表达的基因
+#挑选与MUC16共表达的基因
+pv<-c() #正常组
+r<-c()
+for(ge in rownames(SKCM)){
+  ct<-cor.test(as.numeric(SKCM["MUC16",no]),as.numeric(SKCM[ge,no]))
+  pl<-ct$p.value
+  pv<-c(pv,pl)
+  c<-cor(as.numeric(SKCM["MUC16",no]),as.numeric(SKCM[ge,no]))
+  r<-c(r,c)
+}
+index1<-intersect(which(abs(r)>0.5),which(pv<0.05))
+#突变组
+pm<-c() 
+rm<-c()
+for(ge in rownames(SKCM)){
+  ct<-cor.test(as.numeric(SKCM["MUC16",mu]),as.numeric(SKCM[ge,mu]))
+  pl<-ct$p.value
+  pm<-c(pm,pl)
+  c<-cor(as.numeric(SKCM["MUC16",mu]),as.numeric(SKCM[ge,mu]))
+  rm<-c(rm,c)
+}
+index2<-intersect(which(abs(rm)>0.5),which(pm<0.05))
+corg<-setdiff(rownames(SKCM)[index2],rownames(SKCM)[index1])
+##shapiro.test(SKCM[corg[1],])
+write.table(SKCM[corg,],"E:/test/SKCM/SKCM_MUC16corgene.txt",sep="\t",col.names=T,row.names=T,quote=F)
+
+###突变与不突变中差异的
+p.w<-rep(NA,length(corg))  #建立一个秩和检验的p值空向量，里面赋的是NA
+for(i in 1:length(corg)){ 
+  p.w[i]<- wilcox.test(as.numeric(SKCM[i,mu]),as.numeric(SKCM[i,no]))$p.value    #p.w里面输入值
+}
+fdr.w<-p.adjust(p.w,method="fdr",length(p.w))    #p.adjust就是计算FDR的包，这个可要记得了
+diff<-rownames(SKCM)[which(p.w<0.05)]
+is.element("MUC16",diff)
+
+fg<-c()#FC
+for(g in corg){
+  fc <- mean(as.numeric(SKCMexp[g,mu]))/mean(as.numeric(SKCMexp[g,no]))
+  if(fc>1.5 | fc<2/3)
+  {fg<-c(fg,g)}
+}
+p<-c()#T检验
+for(i in corg){
+  res<-t.test(as.numeric(SKCM[i,mu]),as.numeric(SKCM[i,no]))
+  p<-c(p,res$p.value)
+}
+fg2<-corg[which(p<0.05 & p!="NaN")]#差异基因
+cofg<-intersect(fg,fg2) ##FC、T检验共同
+#cofg<-cofg[-34]
+write.table(cofg,"E:/test/SKCM/cofg85.txt",col.names = F,row.names = F,quote=F)
+
+
+##绘制热图
+cc<-c(rep("red",length(mu)),rep("blue",length(no)))
+col <- colorRampPalette(c("blue","white","red"))(256)
+pdf("E:/test/SKCM/heatmap_diff.pdf")
+heatmap(SKCM[cofg,c(mu,no)],ColSideColors=cc,hclustfun=function(x) hclust(x,method='ward.D2'),cexRow=0.5,cexCol=0.5)
+heatmap(SKCM[cofg,c(mu,no)],ColSideColors=cc,scale = "row",col=greenred(100),hclustfun=function(x) hclust(x,method='ward.D2'),cexRow=0.5,cexCol=0.5)
+heatmap(SKCM[cofg,c(mu,no)],ColSideColors=cc,col=col,hclustfun=function(x) hclust(x,method='ward.D2'),cexRow=0.5,cexCol=0.5)
+heatmap(SKCM[cofg,c(mu,no)],ColSideColors=cc,Colv=NA,col=col,cexRow=0.5,cexCol=0.5)
+col_anno = data.frame(SampleClass = factor(rep(c("cor_Mutation", "cor_NoMutation"), 
+                                               c(length(mu),length(no)))),
+                      row.names=c(mu,no)) 
+pheatmap(SKCM[cofg,c(mu,no)],col=col,annotation_col=col_anno)
+heatmap.2(SKCM[cofg,c(mu,no)],hclustfun=function(x) hclust(x,method='ward.D2'),scale="row",ColSideColors=cc,margin=c(2,8),
+          key=TRUE, symkey=FALSE, density.info="none", trace="none", cexRow=0.5)
+heatmap.2(SKCM[cofg,c(mu,no)],hclustfun=function(x) hclust(x,method='ward.D2'),scale="row",ColSideColors=cc,margin=c(2,8),
+          key=TRUE, symkey=FALSE, density.info="none", trace="none", cexRow=0.5,col=cc)
+heatmap.2(SKCM[cofg,c(mu,no)],hclustfun=function(x) hclust(x,method='ward.D2'),scale="row",ColSideColors=cc,margin=c(2,8),
+          key=TRUE, symkey=FALSE, density.info="none", trace="none", cexRow=0.5,col=greenred(100))
+dev.off()
+
+
+###热图分类的结果进行生存
+sa1<-c("TCGA.EB.A5SF.01","TCGA.ER.A2NB.01","TCGA.XV.A9VZ.01","TCGA.EB.A550.01","TCGA.EB.A3XD.01","TCGA.ER.A196.01",
+      "TCGA.EB.A4OZ.01","TCGA.XV.A9W2.01","TCGA.EB.A44N.01","TCGA.EB.A299.01","TCGA.EB.A4IQ.01")
+sa0<-setdiff(c(mu,no),sa1)
+
+set.seed(806)
+sa2<-sample(sa0,length(sa1))
+y<-Surv(as.numeric(clinical[c(sa1,sa2),"days"]),as.numeric(clinical[c(sa1,sa2),1]))
+class<-c(rep(0,length(sa1)),rep(1,length(sa2)))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  #p值 0.01980486
+fit<-survfit(y~class)
+pdf("E:/test/SKCM/survivai-heat.pdf")
+plot(fit,xlab="OS(days)",ylab="Percent survival",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+legend(1200,0.9,bty = "n",c("Low-expression","High-expression"),cex=1,col=c("green","red"),lty = 1:1,lwd=2) ##图标
+legend("bottomleft",bty = "n",c(paste("Log-rank p=0.0198"))) ##P值0.0198
+lines(c(1200,1850),c(0.88,0.88),type = "l",lwd=1.3)
+lines(c(1200,1850),c(0.79,0.79),type = "l",lwd=1.3)
+lines(c(1200,1200),c(0.79,0.88),type = "l",lwd=1.3)
+lines(c(1850,1850),c(0.79,0.88),type = "l",lwd=1.3)
+dev.off()
+
+y<-Surv(as.numeric(clinical[c(mu,no),"days"]),as.numeric(clinical[c(mu,no),1]))
+class<-c(rep(0,length(mu)),rep(1,length(no)))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  #p值 0.1384
+fit<-survfit(y~class)
+pdf("E:/test/SKCM/survivai_muno.pdf")
+plot(fit,xlab="OS(days)",ylab="Survival Probability",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+legend(1300,0.9,bty = "n",c("nonmuta","mutation"),cex=1,col=c("green","red"),lty = 1:1,lwd=2) ##图标
+legend("bottomleft",bty = "n",c(paste("Log-rank p=0.1384"))) ##P值0.1384
+lines(c(1300,1800),c(0.88,0.88),type = "l",lwd=1.3)
+lines(c(1300,1800),c(0.79,0.79),type = "l",lwd=1.3)
+lines(c(1300,1300),c(0.79,0.88),type = "l",lwd=1.3)
+lines(c(1800,1800),c(0.79,0.88),type = "l",lwd=1.3)
+dev.off()
+
+######预后相关生物标志物的筛选
+###突变不突变中的单因素cox回归
+library(survival)
+clinical<-read.table("E:/9780/gene_clinical/MUC16_clinical.txt",sep="\t",header=T) #读入临床数据
+clinical<-as.matrix(clinical)
+rownames(clinical)<-paste(gsub("-",".",rownames(clinical)),".01",sep="")
+clinical[which(clinical[,1]=="dead"),1]<-1
+clinical[which(clinical[,1]=="alive"),1]<-0
+###取有临床信息的样本
+##单cox回归
+y<-Surv(as.numeric(clinical[c(mu,no),"days"]),as.numeric(clinical[c(mu,no),1]))
+marker_cox_dan=c()
+for(j in c("MUC16",cofg)){
+  cox.fit_dan<- coxph( y~as.numeric(SKCM[j,c(mu,no)]))
+  coxresult<-summary(cox.fit_dan)#cox的结果
+  pvalue_lnc=coxresult$coefficients[5]#存放waldtest的p值
+  if(pvalue_lnc<0.05){
+    print(j)
+    print(pvalue_lnc)
+    print(coxresult$conf.int[1])
+    marker_cox_dan=c(marker_cox_dan,j)
+  }
+}
+##多因素cox回归
+mydata<-SKCM[marker_cox_dan,c(mu,no)]
+cox.fit_duo<- coxph( y ~ .,data=data.frame(t(mydata)))
+result_duo_cox=step(cox.fit_duo,direction = "both")
+step_duo_cox=summary(result_duo_cox)
+result=step_duo_cox$coefficients  #识别出三个biomarkers
+HR=as.numeric(result[,2])
+xishu=as.numeric(result[,1])
+
+
+####生存分析
+newda<-SKCM[c("SPEG","LOC105370681","RARRES1"),c(mu,no)]
+score<-apply(newda,2,function(i){xishu*i})
+score<-apply(score,2,sum)
+cutoff<-median(score)
+class<-rep(0,length(score))  #分数高的为0，低风险
+class[which(score<cutoff)]<-1  #分数低的为1，高分险
+###K-M绘制生存曲线
+y<-Surv(as.numeric(clinical[colnames(newda),"days"]),as.numeric(clinical[colnames(newda),1]))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  #p值 0.0124511
+fit<-survfit(y~class)
+HR<-summary(coxph( y~score))$conf.int[1]
+lower<-summary(coxph( y~score))$conf.int[3]
+upper<-summary(coxph( y~score))$conf.int[4]
+pdf("E:/test/SKCM/survival-cofg.pdf")
+plot(fit,xlab="OS(days)",ylab="Percent survival",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+legend(1300,0.9,bty = "n",c("Low-risk","High-risk"),cex=1,col=c("green","red"),lty = 1:1,lwd=2) ##图标
+legend("bottomleft",bty = "n",c(paste("Log-rank p=0.0124"),paste("HR(95% CI)=2.718(1.556-4.748)"))) ##P值0.02075241
+lines(c(1300,1750),c(0.88,0.88),type = "l",lwd=1.3)
+lines(c(1300,1750),c(0.79,0.79),type = "l",lwd=1.3)
+lines(c(1300,1300),c(0.79,0.88),type = "l",lwd=1.3)
+lines(c(1750,1750),c(0.79,0.88),type = "l",lwd=1.3)
+dev.off()
+
+####风险得分
+x=1:length(score)
+y0=as.numeric(sort(score)[1:52])
+y1=as.numeric(sort(score)[53:length(x)])
+y2=as.numeric(clinical[names(score)[order(score)],5]) #生存时间
+pdf("E:/test/SKCM/scores.pdf")
+plot(1:52,y0,ylab="Risk scores",pch=16,cex=0.8,col="green",
+     xlab="",xlim=c(1,max(x)),ylim=c(min(score),max(score)))
+points(53:max(x),y1,pch=16,cex=0.8,col="red")
+legend(0,3.1,c("low-risk","high-risk"),lwd=4,col=c("green","red"),bty = "n")
+abline( v = 52.5, col = "gray60",lty=1.3)
+lines(c(0,26),c(3.1,3.1),type = "l",lwd=1.3)
+lines(c(0,26),c(2.7,2.7),type = "l",lwd=1.3)
+lines(c(0,0),c(2.7,3.1),type = "l",lwd=1.3)
+lines(c(26,26),c(2.7,3.1),type = "l",lwd=1.3)
+dev.off()
+##生存时间点图
+pdf("E:/test/SKCM/point.pdf")
+mycol<-rep("blue",103)
+mycol[which(clinical[names(score)[order(score)],1]=="1")]<-"red"
+plot(x,y2,ylab="Survival time(days)",xlab="",col=mycol,cex=1,pch=16)
+abline( v=52.5, col = "gray60",lty=2)
+text(90,1700,c("Death\nAlive"))
+text(85,1750,".",col="red",cex=2)
+text(85,1650,".",col="blue",cex=2)
+lines(c(82,98),c(1800,1800),type = "l",lwd=1.3)
+lines(c(82,98),c(1600,1600),type = "l",lwd=1.3)
+lines(c(82,82),c(1600,1800),type = "l",lwd=1.3)
+lines(c(98,98),c(1600,1800),type = "l",lwd=1.3)
+dev.off()
+###绘制热图
+map <- SKCM[c("SPEG","LOC105370681","RARRES1"),colnames(newda)[order(score)]]
+rownames(map)<-c("SPEG","LOC105370681","RARRES1")
+pdf("E:test/SKCM/bio_heatmap.pdf")
+heatmap(map,scale="row",col=greenred(100),Colv=NA,Rowv=NA,cexRow=0.8,cexCol=0.5)
+heatmap(map,scale="row",Colv=NA,Rowv=NA,cexRow=0.8,cexCol=0.5)
+heatmap.2(map,scale="row",key=TRUE, symkey=FALSE, density.info="none",
+          trace="none",Colv=FALSE,Rowv=FALSE,cexRow=0.8,cexCol=0.5)
+pheatmap(map,cluster_rows = FALSE,cluster_cols = FALSE)
+dev.off()
+
+####绘制ROC曲线 
+cutoff1<-365
+cutoff3<-365*3
+cutoff5<-365*5
+##一年期
+Mayo.fit1<-survivalROC.C(Stime=clinical[c(mu,no),5],
+                         status=clinical[c(mu,no),1],
+                         marker=score,
+                         predict.time=cutoff1)
+##三年期
+Mayo.fit3<-survivalROC.C(Stime=clinical[c(mu,no),5],
+                         status=clinical[c(mu,no),1],
+                         marker=score,
+                         predict.time=cutoff3)
+##五年期
+Mayo.fit5<-survivalROC.C(Stime=clinical[c(mu,no),5],
+                         status=clinical[c(mu,no),1],
+                         marker=score,
+                         predict.time=cutoff5)
+pdf("E:/test/SKCM/ROC.pdf")
+plot(Mayo.fit1$FP,Mayo.fit1$TP,type="l",
+     xlim=c(0,1),ylim=c(0,1),
+     xlab="1-Specificity",ylab="Sensitivity",main="Time-dependent ROC curve",col="orange",lwd=2)
+abline(0,1,col="skyblue")
+lines(Mayo.fit3$FP,Mayo.fit3$TP,type="l",
+      xlim=c(0,1),ylim=c(0,1),col="green",lwd=2)
+lines(Mayo.fit5$FP,Mayo.fit5$TP,type="l",
+      xlim=c(0,1),ylim=c(0,1),col="red",lwd=2)
+legend(0.3,0.2,c(paste("AUC at 1 year:",round(Mayo.fit1$AUC,3)),
+                 paste("AUC at 3 year:",round(Mayo.fit3$AUC,3)),
+                 paste("AUC at 5 year:",round(Mayo.fit5$AUC,3))),
+       lwd=3,col=c("orange","green","red"),bty = "n")
+lines(c(0.3,0.75),c(0.03,0.03),type = "l",lwd=2)
+lines(c(0.3,0.75),c(0.2,0.2),type = "l",lwd=2)
+lines(c(0.3,0.3),c(0.03,0.2),type = "l",lwd=2)
+lines(c(0.75,0.75),c(0.03,0.2),type = "l",lwd=2)
+dev.off()
+###1年3年期
+pdf("E:/test/SKCM/ROC13.pdf")
+plot(Mayo.fit1$FP,Mayo.fit1$TP,type="l",
+     xlim=c(0,1),ylim=c(0,1),
+     xlab="1-Specificity",ylab="Sensitivity",main="Time-dependent ROC curve",col="orange",lwd=2)
+abline(0,1,col="skyblue")
+lines(Mayo.fit3$FP,Mayo.fit3$TP,type="l",
+      xlim=c(0,1),ylim=c(0,1),col="green",lwd=2)
+legend(0.3,0.2,c(paste("AUC at 1 year:",round(Mayo.fit1$AUC,2)),
+                 paste("AUC at 3 year:",round(Mayo.fit3$AUC,2))),
+       lwd=3,col=c("orange","red"),bty = "n")
+lines(c(0.3,0.75),c(0.08,0.08),type = "l",lwd=2)
+lines(c(0.3,0.75),c(0.2,0.2),type = "l",lwd=2)
+lines(c(0.3,0.3),c(0.08,0.2),type = "l",lwd=2)
+lines(c(0.75,0.75),c(0.08,0.2),type = "l",lwd=2)
+dev.off()
+
+###绘制箱式图
+newda<-SKCM[c("SPEG","LOC105370681","RARRES1"),c(mu,no)]
+score<-apply(newda,2,function(i){xishu*i})
+score<-apply(score,2,sum)
+low<-as.numeric(score[which(score<cutoff)])
+high<-as.numeric(score[which(score>=cutoff)])
+t.test(low,high)$p.value
+boxplot(low,high,
+        col=c("green","red"),border=c("green","red"),
+        las=1,outline = F,
+        xlab="",ylab="Relative mRNA expression")
+text(x=1:2,y=-0.6, srt = 45, adj = 1, labels = c("low","high"),xpd = TRUE,cex=0.8)
+
+##提取基因，表达值，画箱式图
+a1<-as.numeric(map["SPEG",1:52]) #数值化
+a2<-as.numeric(map["SPEG",53:103])
+a3<-as.numeric(map["LOC105370681",1:52])
+a4<-as.numeric(map["LOC105370681",53:103])
+a5<-as.numeric(map["RARRES1",1:52])
+a6<-as.numeric(map["RARRES1",53:103])
+t.test(a1,a2)$p.value
+t.test(a3,a4)$p.value
+t.test(a5,a6)$p.value
+labs=c("SPEG","SPEG","LOC10537068","LOC10537068","RARRES1","RARRES1")
+pdf("E:/test/SKCM/box.pdf")
+boxplot(a1,a2,a3,a4,a5,a6,
+        col=rep(c("green","red"),5),border=rep(c("green","red"),5),
+        ylim=c(-0.7, 2.2),las=1,outline = F,
+        xlab="",ylab="Relative mRNA expression")
+text(x=seq(1,6,by=1),y=-0.9, srt = 45, adj = 1, labels = labs,xpd = TRUE,cex=0.8)
+text(x=1.5,y=2.1,"****") #p_SPEG=1.080526e-05
+text(x=3.5,y=2.1,"****") #p_LOC105370681=1.321963e-05
+text(x=5.5,y=2.1,"**") #p_RARRES1=0.00484465
+lines(c(1,2),c(2,2),type = "l")
+lines(c(3,4),c(2,2),type = "l")
+lines(c(5,6),c(2,2),type = "l")
+lines(c(1,1),c(1.9,2),type = "l")
+lines(c(2,2),c(1.9,2),type = "l")
+lines(c(3,3),c(1.9,2),type = "l")
+lines(c(4,4),c(1.9,2),type = "l")
+lines(c(5,5),c(1.9,2),type = "l")
+lines(c(6,6),c(1.9,2),type = "l")
+dev.off()
+
+
+###单个基因的生存
+#"SPEG"
+score<-SKCM["SPEG",c(mu,no)]
+cutoff<-median(score)
+class<-rep(1,length(score))  #分数低的为1，高分险
+class[which(score>cutoff)]<-0  #分数高的为0，低风险
+###K-M绘制生存曲线
+y<-Surv(as.numeric(clinical[names(score),"days"]),as.numeric(clinical[names(score),1]))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  ####p值 0.154009
+p1
+fit<-survfit(y~class)
+HR<-summary(coxph( y~score))$conf.int[1]
+lower<-summary(coxph( y~score))$conf.int[3]
+upper<-summary(coxph( y~score))$conf.int[4]
+
+plot(fit,xlab="OS(days)",ylab="Percent survival",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+
+#"LOC105370681"
+score<-SKCM["LOC105370681",c(mu,no)]
+cutoff<-median(score)
+class<-rep(1,length(score))  #分数低的为1，高分险
+class[which(score>cutoff)]<-0  #分数高的为0，低风险
+###K-M绘制生存曲线
+y<-Surv(as.numeric(clinical[names(score),"days"]),as.numeric(clinical[names(score),1]))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  ####p值 0.1521555
+fit<-survfit(y~class)
+HR<-summary(coxph( y~score))$conf.int[1]
+lower<-summary(coxph( y~score))$conf.int[3]
+upper<-summary(coxph( y~score))$conf.int[4]
+
+plot(fit,xlab="OS(days)",ylab="Percent survival",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+
+
+######与MUC16相关并在4类样本中差异的基因
+samples<-read.table("D:/class4.txt",sep="\t",header=T)
+samples<-as.matrix(samples)
+s1<-samples[which(samples[,2]=="1"),1]
+s2<-samples[which(samples[,2]=="2"),1]
+s3<-samples[which(samples[,2]=="3"),1]
+s4<-samples[which(samples[,2]=="4"),1]
+n1<-as.numeric(SKCM[cofg,s1])
+n2<-as.numeric(SKCM[cofg,s2])
+n3<-as.numeric(SKCM[cofg,s3])
+n4<-as.numeric(SKCM[cofg,s4])
+n<-cbind(c(n1,n2,n3,n4),c(rep(1,length(n1)),rep(2,length(n2)),rep(3,length(n3)),rep(4,length(n4))))
+colnames(n)<-c("exp","class")
+n<-as.data.frame(n)
+n$class<-as.factor(n$class)
+pdf("E:/test/SKCM/class_point2.pdf")
+ggplot(n, aes(x = class,y = exp,colour = class))+
+  geom_boxplot(aes(fill=class),alpha=0.5,lwd=0.1,width=0.8,position = position_dodge(1),outlier.colour = NA,outlier.shape = ".",outlier.size=0)+
+  scale_fill_manual(values=c("mediumblue","violetred3","wheat3","seagreen3"))+
+  scale_color_manual(values=c("paleturquoise3","violetred2","grey","springgreen1"))+
+  geom_jitter(aes(class,exp,colour = class,fill = class),
+              position = position_jitter(width = 0.1,height = 0),
+              alpha=0.2,size=0.05)+
+  theme(legend.position="top",plot.title=element_text(hjust = 0.5),
+        panel.border=element_blank(),panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),panel.background = NULL,axis.text=element_text(size=8,colour="black"),
+        strip.text=element_text(size=6,colour="black"))
+dev.off()
+
+###第二类样本和其他样本的差异
+s2<-samples[which(samples[,2]=="2"),1]
+so<-setdiff(samples[,1],s2)
+o2<-c()
+for(i in cofg){
+  fc <- mean(as.numeric(SKCMexp[i,s2]))/mean(as.numeric(SKCMexp[i,so]))
+  if(fc>1.5| fc<2/3)
+  {o2<-c(o2,i)}
+}
+p<-c()#T检验
+for(i in cofg){
+  res<-t.test(as.numeric(SKCM[i,s2]),as.numeric(SKCM[i,so]))
+  p<-c(p,res$p.value)
+}
+oG2<-cofg[which(p<0.05 & p!="NaN")]#差异基因
+G2<-intersect(o2,oG2) #79
+
+###找上下调基因
+normal<-"TCGA.GN.A4U8.11"
+Gfc<-c()
+for(g in G2){
+  fc <- mean(as.numeric(SKCMexp[g,s2]))/as.numeric(SKCMexp[g,normal])
+  Gfc<-c(Gfc,fc)
+}
+up1<-G2[which(Gfc>2)]  #67
+down1<-G2[which(Gfc<0.5)]  #0
+im1<-G2[which(0.5<=Gfc & Gfc<=2)]  #12
+Gfo<-c()
+for(g in G2){
+  fc <- mean(as.numeric(SKCMexp[g,so]))/as.numeric(SKCMexp[g,normal])
+  Gfo<-c(Gfo,fc)
+}
+up2<-G2[which(Gfo>2)]  #33
+down2<-G2[which(Gfo<0.5)]  #14
+im2<-G2[which(0.5<=Gfo & Gfo<=2)]  #32
+
+G2up<-setdiff(up1,up2)  #34
+G2im<-setdiff(im1,im2)  #9
+G2down<-setdiff(down1,down2) #0
+
+otherup<-setdiff(up2,up1) #0
+otherim<-setdiff(im2,im1) #29
+otherdown<-setdiff(down2,down1)  #14
+
+write.table(G2up,"E:test/SKCM/G2up.txt",col.names = F,row.names = F,quote=F)
+write.table(otherdown,"E:test/SKCM/otherdown.txt",col.names = F,row.names = F,quote=F)
+
+
+##单cox回归
+updown<-unique(c(G2up,otherdown))
+y<-Surv(as.numeric(clinical[mu,"days"]),as.numeric(clinical[mu,1]))
+marker_cox_dan=c()
+for(j in c("MUC16",updown)){
+  cox.fit_dan<- coxph( y~as.numeric(SKCM[j,mu]))
+  coxresult<-summary(cox.fit_dan)#cox的结果
+  pvalue_lnc=coxresult$coefficients[5]#存放waldtest的p值
+  if(pvalue_lnc<0.05){
+    print(j)
+    print(pvalue_lnc)
+    print(coxresult$conf.int[1])
+    marker_cox_dan=c(marker_cox_dan,j)
+  }
+}
+##多因素cox回归
+mydata<-SKCM[marker_cox_dan,mu]
+cox.fit_duo<- coxph( y ~ .,data=data.frame(t(mydata)))
+result_duo_cox=step(cox.fit_duo,direction = "both")
+step_duo_cox=summary(result_duo_cox)
+result=step_duo_cox$coefficients  #识别出4个biomarkers
+HR=as.numeric(result[,2])
+xishu=as.numeric(result[,1])
+
+
+####生存分析
+newda<-SKCM[rownames(result),mu]
+score<-apply(newda,2,function(i){xishu*i})
+score<-apply(score,2,sum)
+cutoff<-median(score)
+class<-rep(0,length(score))  #分数高的为0，低风险
+class[which(score<cutoff)]<-1  #分数低的为1，高分险
+###K-M绘制生存曲线
+y<-Surv(as.numeric(clinical[colnames(newda),"days"]),as.numeric(clinical[colnames(newda),1]))
+dif<-survdiff(y~class)
+p1<-pchisq(dif$chisq,1,lower.tail = F)  #p值 0.01613677
+fit<-survfit(y~class)
+HR<-summary(coxph( y~score))$conf.int[1]
+lower<-summary(coxph( y~score))$conf.int[3]
+upper<-summary(coxph( y~score))$conf.int[4]
+pdf("E:/test/SKCM/updown_survival.pdf")
+plot(fit,xlab="OS(days)",ylab="Percent survival",
+     col=c("red","green"),lty = 1:1,lwd=2, bty="l",yaxt="n")
+grid()
+axis(side=2,at=c(0,0.2,0.4,0.6,0.8,1.0),labels=c(0,20,40,60,80,100))
+legend(150,0.5,bty = "n",c("Low-risk","High-risk"),cex=1,col=c("green","red"),lty = 1:1,lwd=2) ##图标
+legend("bottomleft",bty = "n",c(paste("Log-rank p=0.0161"),paste("HR(95% CI)=2.718(1.733-4.264)")))
+lines(c(150,500),c(0.5,0.5),type = "l",lwd=1.3)
+lines(c(150,500),c(0.38,0.38),type = "l",lwd=1.3)
+lines(c(150,150),c(0.38,0.5),type = "l",lwd=1.3)
+lines(c(500,500),c(0.38,0.5),type = "l",lwd=1.3)
+dev.off()
+
+####风险得分
+x=1:length(score)
+y0=as.numeric(sort(score)[1:35])
+y1=as.numeric(sort(score)[36:length(x)])
+y2=as.numeric(clinical[names(score)[order(score)],5]) #生存时间
+pdf("E:/test/SKCM/updown_scores.pdf")
+plot(1:35,y0,ylab="Risk scores",pch=16,cex=0.8,col="green",
+     xlab="",xlim=c(1,max(x)),ylim=c(min(score),max(score)))
+points(36:max(x),y1,pch=16,cex=0.8,col="red")
+abline( v = 35.5, col = "gray60",lty=1.3)
+dev.off()
+##生存时间点图
+pdf("E:/test/SKCM/updown_point.pdf")
+mycol<-rep("blue",69)
+mycol[which(clinical[names(score)[order(score)],1]=="1")]<-"red"
+plot(x,y2,ylab="Survival time(days)",xlab="",col=mycol,cex=1,pch=16)
+abline( v=35.5, col = "gray60",lty=2)
+dev.off()
+###绘制热图
+map <- SKCM[rownames(result),colnames(newda)[order(score)]]
+rownames(map)<-rownames(result)
+pdf("E:test/SKCM/updown_heatmap.pdf")
+heatmap(map,scale="row",col=greenred(100),Colv=NA,Rowv=NA,cexRow=0.8,cexCol=0.5)
+heatmap(map,scale="row",Colv=NA,Rowv=NA,cexRow=0.8,cexCol=0.5)
+heatmap.2(map,scale="row",key=TRUE, symkey=FALSE, density.info="none",
+          trace="none",Colv=FALSE,Rowv=FALSE,cexRow=0.8,cexCol=0.5)
+pheatmap(map,cluster_rows = FALSE,cluster_cols = FALSE)
+dev.off()
+
+####绘制ROC曲线 
+cutoff1<-365
+cutoff3<-365*3
+cutoff5<-365*5
+##一年期
+Mayo.fit1<-survivalROC.C(Stime=clinical[mu,5],
+                         status=clinical[mu,1],
+                         marker=score,
+                         predict.time=cutoff1)
+##三年期
+Mayo.fit3<-survivalROC.C(Stime=clinical[mu,5],
+                         status=clinical[mu,1],
+                         marker=score,
+                         predict.time=cutoff3)
+##五年期
+Mayo.fit5<-survivalROC.C(Stime=clinical[mu,5],
+                         status=clinical[mu,1],
+                         marker=score,
+                         predict.time=cutoff5)
+pdf("E:/test/SKCM/updown_ROC.pdf")
+plot(Mayo.fit1$FP,Mayo.fit1$TP,type="l",
+     xlim=c(0,1),ylim=c(0,1),
+     xlab="1-Specificity",ylab="Sensitivity",main="Time-dependent ROC curve",col="orange",lwd=2)
+abline(0,1,col="skyblue")
+lines(Mayo.fit3$FP,Mayo.fit3$TP,type="l",
+      xlim=c(0,1),ylim=c(0,1),col="green",lwd=2)
+lines(Mayo.fit5$FP,Mayo.fit5$TP,type="l",
+      xlim=c(0,1),ylim=c(0,1),col="red",lwd=2)
+legend(0.3,0.2,c(paste("AUC at 1 year:",round(Mayo.fit1$AUC,2)),
+                 paste("AUC at 3 year:",round(Mayo.fit3$AUC,2)),
+                 paste("AUC at 5 year:",round(Mayo.fit5$AUC,2))),
+       lwd=3,col=c("orange","green","red"),bty = "n")
+lines(c(0.3,0.75),c(0.03,0.03),type = "l",lwd=2)
+lines(c(0.3,0.75),c(0.2,0.2),type = "l",lwd=2)
+lines(c(0.3,0.3),c(0.03,0.2),type = "l",lwd=2)
+lines(c(0.75,0.75),c(0.03,0.2),type = "l",lwd=2)
+dev.off()
+
+###绘制箱式图
+##提取基因，表达值，画箱式图
+"SLC16A9" "LTB4R"   "LTB4R2"  "CNGB1"
+a1<-as.numeric(map["CNGB1",1:35]) #数值化
+a2<-as.numeric(map["CNGB1",36:69])
+a3<-as.numeric(map["LTB4R",1:35])
+a4<-as.numeric(map["LTB4R",36:69])
+a5<-as.numeric(map["LTB4R2",1:35])
+a6<-as.numeric(map["LTB4R2",36:69])
+a7<-as.numeric(map["SLC16A9",1:35])
+a8<-as.numeric(map["SLC16A9",36:69])
+t.test(a1,a2)$p.value #0.0116
+t.test(a3,a4)$p.value #0.15359
+t.test(a5,a6)$p.value #0.046396
+t.test(a7,a8)$p.value #0.1232
+labs=c("CNGB1","CNGB1","LTB4R","LTB4R","LTB4R2","LTB4R2","SLC16A9","SLC16A9")
+pdf("E:/test/SKCM/updown_box.pdf")
+boxplot(a1,a2,a3,a4,a5,a6,a7,a8,
+        col=rep(c("green","red"),4),border=rep(c("green","red"),4),
+        ylim=c(-0.7, 1.2),las=1,outline = F,
+        xlab="",ylab="Relative mRNA expression")
+text(x=seq(1,8,by=1),y=-0.9, srt = 45, adj = 1, labels = labs,xpd = TRUE,cex=0.8)
+text(x=1.5,y=1.1,"*") #p_CNGB1= 0.0116
+text(x=3.5,y=1.1,".") #p_LTB4R=0.15359
+text(x=5.5,y=1.1,"*") #p_LTB4R2=0.046396
+text(x=7.5,y=1.1,".") #p_RARRES1=0.123205
+lines(c(1,2),c(1,1),type = "l")
+lines(c(5,6),c(1,1),type = "l")
+lines(c(1,1),c(0.9,1),type = "l")
+lines(c(2,2),c(0.9,1),type = "l")
+lines(c(5,5),c(0.9,1),type = "l")
+lines(c(6,6),c(0.9,1),type = "l")
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
